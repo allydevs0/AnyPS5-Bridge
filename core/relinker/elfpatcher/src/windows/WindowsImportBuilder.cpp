@@ -4,8 +4,18 @@
 
 namespace Elfpatcher::Windows {
 
-WindowsImports WindowsImportBuilder::Build(const std::uint32_t sectionRva) const {
-    const std::vector<std::string> names = {"ExitProcess", "FormatMessageA", "FreeLibrary", "GetCommandLineW", "GetFileAttributesA", "GetLastError", "GetModuleFileNameA", "GetModuleHandleA", "GetProcAddress", "GetStdHandle", "GetSystemDirectoryA", "LoadLibraryExA", "LocalFree", "RaiseException", "VirtualAlloc", "WideCharToMultiByte", "WriteFile", "lstrcatA", "lstrcmpA", "lstrcmpiA", "lstrcpyA", "lstrlenA"};
+WindowsImports WindowsImportBuilder::Build(const std::uint32_t sectionRva, const std::vector<std::string>& extraFunctions) const {
+    std::vector<std::string> names = {"ExitProcess", "FormatMessageA", "FreeLibrary", "GetCommandLineW", "GetFileAttributesA", "GetLastError", "GetModuleFileNameA", "GetModuleHandleA", "GetProcAddress", "GetStdHandle", "GetSystemDirectoryA", "LoadLibraryExA", "LocalFree", "RaiseException", "VirtualAlloc", "WideCharToMultiByte", "WriteFile", "lstrcatA", "lstrcmpA", "lstrcmpiA", "lstrcpyA", "lstrlenA"};
+    for (const auto& name : extraFunctions) {
+        if (name.empty())
+            throw Domain::RelinkerException("Empty extra native import name");
+        bool present = false;
+        for (const auto& existing : names) {
+            if (existing == name) { present = true; break; }
+        }
+        if (!present)
+            names.push_back(name);
+    }
     WindowsImports result{{".idata", sectionRva, SectionRead | SectionWrite | 0x40u, std::vector<std::uint8_t>(40)}, {sectionRva, 40}, {}, {}};
     auto& bytes = result.Section.Data;
     const auto lookupOffset = bytes.size();

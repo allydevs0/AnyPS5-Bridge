@@ -24,7 +24,8 @@ AgcDriver::DisplayBuffer DescribeVideoOutBuffer(const VideoOutBuffer& buffer, co
     if (compressed && buffer.metadataAddress == 0) throw std::runtime_error("VideoOut: DCC-compressed buffer " + hex(buffer.dataAddress) + " without DCC metadata");
     if (compressed && attribute.tiling_mode != 0) throw std::runtime_error("VideoOut: DCC-compressed buffer " + hex(buffer.dataAddress) + " with linear tiling");
     if (compressed && (attribute.dcc_control & ~VIDEO_OUT_DCC_CONTROL_BLOCK_LAYOUT) != 0) throw std::runtime_error("VideoOut: unsupported DCC control " + hex(attribute.dcc_control) + " (only the block size and independence fields " + hex(VIDEO_OUT_DCC_CONTROL_BLOCK_LAYOUT) + " are known)");
-    const AgcDriver::DisplayBuffer result{buffer.dataAddress, attribute.pixel_format, attribute.width, attribute.height, attribute.tiling_mode, attribute.pitch_in_pixel, compressed ? buffer.metadataAddress : 0, compressed ? attribute.dcc_cb_register_clear_color : 0};
+    const auto address = buffer.dataAddress & ~static_cast<std::uint64_t>(0xFFFF);
+    const AgcDriver::DisplayBuffer result{address, attribute.pixel_format, attribute.width, attribute.height, attribute.tiling_mode, attribute.pitch_in_pixel, compressed ? buffer.metadataAddress : 0, compressed ? attribute.dcc_cb_register_clear_color : 0};
     static_cast<void>(AgcDriverDisplayBufferSize_nid_postfix(result));
     return result;
 }
@@ -91,7 +92,8 @@ int APS5_VABI sceVideoOutRegisterBuffers2(int handle, int setIndex, int bufferIn
         if (buffers[i].reserved[0] != nullptr || buffers[i].reserved[1] != nullptr) throw std::runtime_error("VideoOut: reserved buffer pointers are set");
         registered[i] = {setIndex, reinterpret_cast<uint64_t>(buffers[i].data), reinterpret_cast<uint64_t>(buffers[i].metadata)};
         const auto display = DescribeVideoOutBuffer(registered[i], group);
-        AgcDriverCheckGuestMemory_nid_postfix(buffers[i].data, AgcDriverDisplayBufferSize_nid_postfix(display), 65536);
+        const auto aligned = reinterpret_cast<const void*>(display.address);
+        AgcDriverCheckGuestMemory_nid_postfix(aligned, 65536, 65536);
     }
     cfg->groups[setIndex] = group;
     cfg->width = attribute->width;

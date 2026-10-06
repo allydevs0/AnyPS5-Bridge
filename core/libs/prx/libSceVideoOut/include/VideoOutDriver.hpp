@@ -196,6 +196,8 @@ public:
     std::shared_ptr<VideoOutConfig> GetConfig(int handle);
     bool IsOpen(int handle);
 
+    void EnsureWindow(std::uint32_t width, std::uint32_t height) { window.Ensure(width, height); }
+
     // 0, or VIDEO_OUT_ERROR_FLIP_QUEUE_FULL when the title has VIDEO_OUT_FLIP_QUEUE_CAPACITY flips pending.
     int SubmitFlip(int handle, int index, int flipMode, int64_t flipArg);
 

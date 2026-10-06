@@ -382,6 +382,8 @@ void VideoOutDriver::vblankEnd() {
 void VideoOutDriver::processFlip(FlipRequest& req) {
     AgcDriver::PerformanceContext timingContext(req.timing.get());
     AgcDriver::PerformanceTimer timing("VideoOut.Flip");
+    require(req.width != 0 && req.height != 0 && req.width <= static_cast<uint32_t>(std::numeric_limits<int>::max()) && req.height <= static_cast<uint32_t>(std::numeric_limits<int>::max()), "invalid window dimensions");
+    window.Ensure(req.width, req.height);
     {
         std::unique_lock lock(req.cfg->mutex);
         timing.Mark("config_mutex_wait");
@@ -396,8 +398,6 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
         checkConfig(*req.cfg);
         req.cfg->lastFlipVblank = req.cfg->vblankStatus.count;
     }
-    require(req.width != 0 && req.height != 0 && req.width <= static_cast<uint32_t>(std::numeric_limits<int>::max()) && req.height <= static_cast<uint32_t>(std::numeric_limits<int>::max()), "invalid window dimensions");
-    window.Ensure(req.width, req.height);
     unsigned extensionCount = 0;
     if (!SDL_Vulkan_GetInstanceExtensions(window.Handle(), &extensionCount, nullptr)) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
     std::vector<const char*> extensions(extensionCount);

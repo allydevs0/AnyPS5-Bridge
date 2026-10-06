@@ -19,6 +19,8 @@
 #include <relinker/pipeline/RelinkerPipeline.hpp>
 #include <relinker/guest/GuestImage.hpp>
 #include <codegen/IAmd64OnlyConverter.hpp>
+#include <codegen/IBmiCompatibilityConverter.hpp>
+#include <algorithm>
 #include <map>
 #include <codegen/CodegenException.hpp>
 #include <filesystem>
@@ -119,7 +121,37 @@ int main(const int argc, char* argv[]) {
 
         std::vector<std::uint8_t> executableBytes;
         try {
-            executableBytes = patcher->Patch(sourceBytes, result.OriginalHeaders, result.DynamicSection, result.OriginalPltGotVaddr, args.runPath, args.lazyBinding, args.windowsDiagnostics, trampolines);
+            if (args.bmiCompat) {
+                auto windowsPatcher = std::dynamic_pointer_cast<Elfpatcher::Windows::WindowsPePatcher>(patcher);
+                if (!windowsPatcher)
+                    throw Domain::RelinkerException("--bmi-compat requires the Windows PE patcher");
+                const auto converter = Codegen::MakeBmiCompatibilityConverter();
+                const auto bmi = converter->Convert(sourceBytes, elfReader->ReadCodeSegments());
+                std::cout << "BMI conversion: " << bmi.DispatchCount << " dispatch, " << bmi.ShortCount << " short sites ("
+                          << bmi.ForcedTrapCount << " forced to #UD)\n";
+                std::cout << "AVX2 conversion: " << bmi.Avx2Count << " dispatch, " << bmi.Avx2ShortCount
+                          << " too-short (4-byte), " << bmi.Avx2RipCount << " rip-relative\n";
+                if (!bmi.Avx2Unmatched.empty()) {
+                    std::vector<std::pair<std::uint32_t, std::size_t>> top(bmi.Avx2Unmatched.begin(), bmi.Avx2Unmatched.end());
+                    std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+                    std::cout << "AVX2 unmatched VEX sites: " << bmi.Avx2Unmatched.size() << " distinct encodings\n";
+                    for (std::size_t i = 0; i < top.size() && i < 18; ++i) {
+                        const auto& [key, count] = top[i];
+                        std::cout << "   C" << ((key >> 24) & 0xFF) << " map" << ((key >> 16) & 0xFF)
+                                  << " op" << ((key >> 8) & 0xFF) << " len" << (key & 0xFF) << "  x" << count << "\n";
+                    }
+                    for (const auto& s : bmi.Avx2UnmatchedSamples) {
+                        std::cout << "   sample len" << s.Length << ": ";
+                        for (std::size_t i = 0; i < s.Length && i < 12; ++i) {
+                            std::cout << std::hex << static_cast<int>(s.Bytes[i]) << " ";
+                        }
+                        std::cout << std::dec << "\n";
+                    }
+                }
+                executableBytes = windowsPatcher->PatchWithBmi(sourceBytes, result.OriginalHeaders, result.DynamicSection, result.OriginalPltGotVaddr, args.runPath, args.lazyBinding, args.windowsDiagnostics, trampolines, bmi);
+            } else {
+                executableBytes = patcher->Patch(sourceBytes, result.OriginalHeaders, result.DynamicSection, result.OriginalPltGotVaddr, args.runPath, args.lazyBinding, args.windowsDiagnostics, trampolines);
+            }
         } catch (Domain::RelinkerException& error) {
             error.InputPath = args.inputPath;
             throw;

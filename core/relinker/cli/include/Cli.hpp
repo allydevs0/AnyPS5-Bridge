@@ -15,6 +15,8 @@ struct Args {
     bool toWindows = false;
     bool lazyBinding = false;
     bool autorun = false;
+    bool bmiCompat = false;
+    bool stubMissingModules = false;
     bool windowsDiagnostics = false;
     bool windowsGui = false;
     std::uint32_t unusedFilterLevel = 0;

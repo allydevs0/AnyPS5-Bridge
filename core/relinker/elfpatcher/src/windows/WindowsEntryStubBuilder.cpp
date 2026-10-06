@@ -32,7 +32,7 @@ std::string normalizeRunPath(std::string path) {
 
 }
 
-WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, const std::uint32_t entryRva, const WindowsImports& nativeImports, const std::vector<std::string>& libraries, const std::vector<PeImport>& imports, const std::string& runPath, const bool lazyBinding, const bool dependencyDiagnostics, const std::vector<Domain::GuestRuntime>& guestModules) const {
+WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, const std::uint32_t entryRva, const WindowsImports& nativeImports, const std::vector<std::string>& libraries, const std::vector<PeImport>& imports, const std::string& runPath, const bool lazyBinding, const bool dependencyDiagnostics, const std::vector<Domain::GuestRuntime>& guestModules, WindowsVehInstall* veh) const {
     if (!imports.empty() && libraries.empty())
         throw Domain::RelinkerException("ELF imports have no DT_NEEDED libraries");
     const auto path = normalizeRunPath(runPath);
@@ -385,6 +385,12 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     code.Rip({0x48, 0x8b, 0x0d}, shellHandle);
     call("FreeLibrary");
     code.Rip({0x48, 0x8b, 0x3d}, argumentBlock);
+    if (veh) {
+        code.Emit({0xb9, 1, 0, 0, 0});
+        veh->HandlerRvaOffset = code.Branch({0x48, 0x8d, 0x15});
+        call("AddVectoredExceptionHandler");
+        code.Emit({0x31, 0xc9});
+    }
     const auto exitCallback = code.Branch({0x48, 0x8d, 0x35});
     code.Rip({0xe8}, entryRva);
     code.Emit({0x89, 0x44, 0x24, 0x58});

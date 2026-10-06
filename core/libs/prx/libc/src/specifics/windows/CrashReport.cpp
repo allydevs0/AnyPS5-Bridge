@@ -13,6 +13,7 @@
 #include <utility>
 #include <mutex>
 #include "Sse4aEmulation.hpp"
+#include "Avx2Emulation.hpp"
 
 namespace {
 
@@ -238,12 +239,31 @@ bool HandleSse4a(EXCEPTION_POINTERS* info) {
     return true;
 }
 
+bool HandleAvx2(EXCEPTION_POINTERS* info) {
+    const auto* record = info->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION) return false;
+    auto* context = info->ContextRecord;
+    const auto rip = context->Rip;
+    std::uint8_t bytes[16];
+    const std::size_t available = ReadCode(rip, bytes, sizeof(bytes));
+    bool emulated = avx2_emu::Emulate(bytes, available, *context);
+    if (emulated) {
+        static int emuCount = 0;
+        if (++emuCount <= 30 || emuCount % 500 == 0) {
+            std::fprintf(stderr, "[avx2_emu] Emulated AVX2 at rip=0x%llx (count=%d)\n", (unsigned long long)rip, emuCount);
+            std::fflush(stderr);
+        }
+    }
+    return emulated;
+}
+
 LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     static std::atomic<bool> reported{false};
     const auto* fault = info->ExceptionRecord;
     if (fault->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && fault->NumberParameters >= 2 && fault->ExceptionInformation[0] == 1 && GuestArena::GuestArenaHandleWrite_nid_postfix(fault->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
     if (HandleWatch(info)) return EXCEPTION_CONTINUE_EXECUTION;
     if (HandleSse4a(info)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (HandleAvx2(info)) return EXCEPTION_CONTINUE_EXECUTION;
     const auto* record = info->ExceptionRecord;
     if (!IsFatal(record->ExceptionCode)) return EXCEPTION_CONTINUE_SEARCH;
     if (reported.exchange(true)) {

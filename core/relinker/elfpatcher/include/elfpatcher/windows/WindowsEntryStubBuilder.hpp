@@ -10,6 +10,11 @@ struct WindowsLazyStub {
     std::uint32_t StubRva;
 };
 
+struct WindowsVehInstall {
+    std::uint32_t HandlerRva = 0;
+    std::size_t HandlerRvaOffset = 0;
+};
+
 struct WindowsEntryStub {
     PeSection Data;
     PeSection Code;
@@ -19,7 +24,7 @@ struct WindowsEntryStub {
 
 class WindowsEntryStubBuilder {
 public:
-    WindowsEntryStub Build(std::uint32_t dataRva, std::uint32_t entryRva, const WindowsImports& nativeImports, const std::vector<std::string>& libraries, const std::vector<PeImport>& imports, const std::string& runPath, bool lazyBinding, bool dependencyDiagnostics, const std::vector<Domain::GuestRuntime>& guestModules = {}) const;
+    WindowsEntryStub Build(std::uint32_t dataRva, std::uint32_t entryRva, const WindowsImports& nativeImports, const std::vector<std::string>& libraries, const std::vector<PeImport>& imports, const std::string& runPath, bool lazyBinding, bool dependencyDiagnostics, const std::vector<Domain::GuestRuntime>& guestModules = {}, WindowsVehInstall* veh = nullptr) const;
 };
 
 }

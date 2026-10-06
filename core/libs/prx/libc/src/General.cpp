@@ -67,7 +67,13 @@ std::filesystem::path Resolve(WorkingDirectory& state, const char* path) {
     auto guest = (std::filesystem::path("/") / state.current.lexically_relative(state.root));
     guest = (input.is_absolute() ? input : guest / input).lexically_normal();
     if (auto aliased = ResolveAlias(guest.relative_path().generic_string())) return *aliased;
-    return (state.root / guest.relative_path()).make_preferred();
+    const auto target = (state.root / guest.relative_path()).make_preferred();
+    std::error_code ec;
+    if (!std::filesystem::exists(target, ec)) {
+        const auto app0Target = (state.root / "app0" / guest.relative_path()).make_preferred();
+        if (std::filesystem::exists(app0Target, ec)) return app0Target;
+    }
+    return target;
 }
 int DirectoryFailure(const std::error_code& error) {
     if (error == std::errc::permission_denied) return 13;

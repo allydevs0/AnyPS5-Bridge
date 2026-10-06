@@ -37,6 +37,10 @@ Args ParseArgs(int argc, char* argv[]) {
             args.toWindows = true;
         } else if (arg == "--lazy-binding") {
             args.lazyBinding = true;
+        } else if (arg == "--bmi-compat") {
+            args.bmiCompat = true;
+        } else if (arg == "--stub-missing-modules") {
+            args.stubMissingModules = true;
         } else if (arg == "--autorun") {
             args.autorun = true;
         } else if (arg == "--windows-diagnostics") {
@@ -63,9 +67,12 @@ Args ParseArgs(int argc, char* argv[]) {
     if (args.windowsGui && !args.toWindows)
         throw std::runtime_error("--windows-gui requires --windows");
 
+    if (args.bmiCompat && !args.toWindows)
+        throw std::runtime_error("--bmi-compat requires --windows");
+
     if (args.inputPath.empty() || args.outputPath.empty())
         throw std::runtime_error(
-            "Usage: relinker [--windows] [--windows-diagnostics] [--windows-gui] [--skip-syscall-check] [--skip-sce-module] [--exclude-sce-module <file>]... [--to-intel] [unused-filter=0|1|2] [--registry] [--rpath <path>] [--lazy-binding] [--autorun] <input.elf> <output.elf>\n"
+            "Usage: relinker [--windows] [--windows-diagnostics] [--windows-gui] [--bmi-compat] [--skip-syscall-check] [--skip-sce-module] [--exclude-sce-module <file>]... [--to-intel] [unused-filter=0|1|2] [--registry] [--rpath <path>] [--lazy-binding] [--autorun] <input.elf> <output.elf>\n"
             "Example: relinker input.elf output.elf"
         );
 

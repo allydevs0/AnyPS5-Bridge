@@ -19,6 +19,7 @@ add_executable(relinker
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsImportBuilder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsEntryStubBuilder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsDependencyStubBuilder.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/BmiVehHandler.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsStubEmitter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsPeWriter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/general/SegmentFilter.cpp
@@ -31,11 +32,16 @@ add_executable(relinker
         ${CMAKE_CURRENT_SOURCE_DIR}/io/src/FileReader.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/io/src/FileWriter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/Amd64OnlyConverter.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/BmiCompatibilityConverter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/InstructionScanner.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/X64InstructionDecoder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/X64InstructionRewriter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/DecodedInstruction.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/Amd64OnlyInstructionMatcher.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/BmiInstructionMatcher.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/BmiStubEmitter.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/Avx2InstructionMatcher.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/Avx2StubEmitter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/Sse4aOperands.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/Sse4aLowering.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/StubBodyBuilder.cpp
@@ -268,5 +274,36 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/codegen/include
         ${CMAKE_CURRENT_SOURCE_DIR}/relinker/include
     )
-    add_test(NAME strict_nid_filter COMMAND strict_nid_filter_tests)
+    add_test_executable(bmi_stub_emitter_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/tests/BmiStubEmitterTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/BmiStubEmitter.cpp
+    )
+    target_include_directories(bmi_stub_emitter_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/domain/include
+    )
+    add_test(NAME bmi_stub_emitter COMMAND bmi_stub_emitter_tests)
+
+    add_test_executable(bmi_matcher_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/tests/BmiMatcherTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/BmiInstructionMatcher.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/src/x86/BmiStubEmitter.cpp
+    )
+    target_include_directories(bmi_matcher_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/codegen/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/domain/include
+    )
+    add_test(NAME bmi_matcher COMMAND bmi_matcher_tests)
+
+    if(WIN32)
+        add_test_executable(windows_veh_dispatch_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/tests/WindowsVehDispatchTests.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/BmiVehHandler.cpp
+        )
+        target_include_directories(windows_veh_dispatch_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/domain/include
+        )
+        add_test(NAME windows_veh_dispatch COMMAND windows_veh_dispatch_tests)
+    endif()
 endif()
