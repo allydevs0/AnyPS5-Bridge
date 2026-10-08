@@ -93,8 +93,10 @@ struct PthreadPrivate {
     void* _retval;
     bool _detached;
     bool _adopted;
+#ifndef _WIN32
     std::mutex _join_mtx;
     std::condition_variable _join_cv;
+#endif
 
     PthreadPrivate() : _finished(false), _retval(nullptr), _detached(false), _adopted(false) {}
 };

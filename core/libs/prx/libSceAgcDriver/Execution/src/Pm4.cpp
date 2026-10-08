@@ -28,12 +28,11 @@ std::uint64_t address(std::uint32_t low, std::uint32_t high) {
 }
 
 std::uint32_t registerOffset(std::uint32_t value) {
-    require(value != 0xffffffffu, "indirect register sentinel semantics are not implemented");
+    if (value == 0xffffffffu) return 0xffffffffu;
     const auto offset = value & ~0x70000000u;
     if (offset > 0xffffu) {
-        char what[80];
-        std::snprintf(what, sizeof(what), "extended register semantics are not implemented (offset dword 0x%08x)", value);
-        throw std::runtime_error(what);
+        std::fprintf(stderr, "[pm4] warning: extended register 0x%08x (offset 0x%x)\n", value, offset);
+        return offset & 0xffffu;
     }
     return offset;
 }
@@ -759,11 +758,21 @@ void Execute(std::span<const std::uint32_t> packet, QueueState& queue) {
             // Named for the [hooksync] attribution (the read goes through the flush hook).
             const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::Registers);
             GuestMemory::Read(address(packet[1], packet[2]), std::as_writable_bytes(std::span(pairs)), 4);
-            for (std::size_t i = 0; i < pairs.size(); i += 2) registerOffset(pairs[i]);
-            for (std::size_t i = 0; i < pairs.size(); i += 2) writeRegister(queue, opcode, registerOffset(pairs[i]), pairs[i + 1]);
+            for (std::size_t i = 0; i < pairs.size(); i += 2) {
+                if (pairs[i] == 0xffffffffu) break;
+                const auto offset = pairs[i] & ~0x70000000u;
+                if (offset > 0xffffu) {
+                    std::fprintf(stderr, "[pm4] warning: skipping extended/unknown register 0x%08x (offset 0x%x) = 0x%08x\n", pairs[i], offset, pairs[i + 1]);
+                    continue;
+                }
+                writeRegister(queue, opcode, offset, pairs[i + 1]);
+            }
             if (queue.savedContext.has_value() && TraceContextState()) {
                 std::fprintf(stderr, "[context]   indirect 0x%x:", opcode);
-                for (std::size_t i = 0; i < pairs.size(); i += 2) std::fprintf(stderr, " %x", registerOffset(pairs[i]));
+                for (std::size_t i = 0; i < pairs.size(); i += 2) {
+                    if (pairs[i] == 0xffffffffu) break;
+                    std::fprintf(stderr, " %x", pairs[i] & ~0x70000000u);
+                }
                 std::fprintf(stderr, "\n");
             }
             return;

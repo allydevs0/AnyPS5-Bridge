@@ -201,13 +201,145 @@ inline bool Emulate(const uint8_t* bytes, std::size_t available, CONTEXT& ctx) {
             return false;
         }
         std::size_t loadSize = is256 ? 32 : 16;
+        if (map == 2) {
+            if (opcode == 0x22 || opcode == 0x32) {
+                loadSize = is256 ? 4 : 2;
+            } else if (opcode == 0x21 || opcode == 0x31 || opcode == 0x24 || opcode == 0x34) {
+                loadSize = is256 ? 8 : 4;
+            } else if (opcode == 0x20 || opcode == 0x30 || opcode == 0x23 || opcode == 0x33 || opcode == 0x25 || opcode == 0x35) {
+                loadSize = is256 ? 16 : 8;
+            }
+        }
         std::memcpy(&v2.b[0], reinterpret_cast<const void*>(memAddr), loadSize);
     }
 
     Vec256 res{};
 
     if (map == 2) { // 0F 38 map
-        if (opcode == 0x45) { // VPSRLVD / VPSRLVQ
+        if (opcode == 0x16 && is256) { // VPERMPS (256-bit only)
+            for (std::size_t i = 0; i < 8; ++i) {
+                unsigned idx = v1.u32(i) & 7;
+                res.set_u32(i, v2.u32(idx));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, true);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x20) { // VPMOVSXBW
+            std::size_t count = is256 ? 16 : 8;
+            for (std::size_t i = 0; i < count; ++i) {
+                int8_t sbyte = static_cast<int8_t>(v2.b[i]);
+                int16_t sval = static_cast<int16_t>(sbyte);
+                std::memcpy(&res.b[i * 2], &sval, 2);
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x21) { // VPMOVSXBD
+            std::size_t count = is256 ? 8 : 4;
+            for (std::size_t i = 0; i < count; ++i) {
+                int8_t sbyte = static_cast<int8_t>(v2.b[i]);
+                int32_t sval = static_cast<int32_t>(sbyte);
+                res.set_u32(i, static_cast<uint32_t>(sval));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x22) { // VPMOVSXBQ
+            std::size_t count = is256 ? 4 : 2;
+            for (std::size_t i = 0; i < count; ++i) {
+                int8_t sbyte = static_cast<int8_t>(v2.b[i]);
+                int64_t sval = static_cast<int64_t>(sbyte);
+                res.set_u64(i, static_cast<uint64_t>(sval));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x23) { // VPMOVSXWD
+            std::size_t count = is256 ? 8 : 4;
+            for (std::size_t i = 0; i < count; ++i) {
+                int16_t sval = 0;
+                std::memcpy(&sval, &v2.b[i * 2], 2);
+                int32_t s32 = static_cast<int32_t>(sval);
+                res.set_u32(i, static_cast<uint32_t>(s32));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x24) { // VPMOVSXWQ
+            std::size_t count = is256 ? 4 : 2;
+            for (std::size_t i = 0; i < count; ++i) {
+                int16_t sval = 0;
+                std::memcpy(&sval, &v2.b[i * 2], 2);
+                int64_t s64 = static_cast<int64_t>(sval);
+                res.set_u64(i, static_cast<uint64_t>(s64));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x25) { // VPMOVSXDQ
+            std::size_t count = is256 ? 4 : 2;
+            for (std::size_t i = 0; i < count; ++i) {
+                int32_t sval = static_cast<int32_t>(v2.u32(i));
+                int64_t s64 = static_cast<int64_t>(sval);
+                res.set_u64(i, static_cast<uint64_t>(s64));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x30) { // VPMOVZXBW
+            std::size_t count = is256 ? 16 : 8;
+            for (std::size_t i = 0; i < count; ++i) {
+                uint16_t val = static_cast<uint16_t>(v2.b[i]);
+                std::memcpy(&res.b[i * 2], &val, 2);
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x31) { // VPMOVZXBD
+            std::size_t count = is256 ? 8 : 4;
+            for (std::size_t i = 0; i < count; ++i) {
+                res.set_u32(i, static_cast<uint32_t>(v2.b[i]));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x32) { // VPMOVZXBQ
+            std::size_t count = is256 ? 4 : 2;
+            for (std::size_t i = 0; i < count; ++i) {
+                res.set_u64(i, static_cast<uint64_t>(v2.b[i]));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x33) { // VPMOVZXWD
+            std::size_t count = is256 ? 8 : 4;
+            for (std::size_t i = 0; i < count; ++i) {
+                uint16_t val = 0;
+                std::memcpy(&val, &v2.b[i * 2], 2);
+                res.set_u32(i, static_cast<uint32_t>(val));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x34) { // VPMOVZXWQ
+            std::size_t count = is256 ? 4 : 2;
+            for (std::size_t i = 0; i < count; ++i) {
+                uint16_t val = 0;
+                std::memcpy(&val, &v2.b[i * 2], 2);
+                res.set_u64(i, static_cast<uint64_t>(val));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x35) { // VPMOVZXDQ
+            std::size_t count = is256 ? 4 : 2;
+            for (std::size_t i = 0; i < count; ++i) {
+                res.set_u64(i, static_cast<uint64_t>(v2.u32(i)));
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x45) { // VPSRLVD / VPSRLVQ
             if (vex_w == 0) { // dword
                 std::size_t count = is256 ? 8 : 4;
                 for (std::size_t i = 0; i < count; ++i) {
@@ -279,6 +411,15 @@ inline bool Emulate(const uint8_t* bytes, std::size_t available, CONTEXT& ctx) {
                 res.set_u64(i, v2.u64(idx));
             }
             StoreVec(ctx, ymmHigh, reg, res, true);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x02) { // VPBLENDD
+            std::size_t count = is256 ? 8 : 4;
+            for (std::size_t i = 0; i < count; ++i) {
+                uint32_t val = ((imm >> i) & 1) ? v2.u32(i) : v1.u32(i);
+                res.set_u32(i, val);
+            }
+            StoreVec(ctx, ymmHigh, reg, res, is256);
             ctx.Rip += cursor;
             return true;
         } else if (opcode == 0x46 && is256) { // VPERM2I128 (256-bit only)

@@ -129,8 +129,10 @@ int APS5_VABI scePthreadCondDestroy(PthreadCond* cond) {
     std::lock_guard lock(condInitializationMutex);
     if (*cond == destroyedCond())
         throw std::runtime_error("Condition variable has already been destroyed");
-    delete *cond;
+    auto* prev = *cond;
     std::atomic_ref<PthreadCond>(*cond).store(destroyedCond(), std::memory_order_release);
+    prev->_cv.NotifyAll();
+    delete prev;
     return 0;
 }
 

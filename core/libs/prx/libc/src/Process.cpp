@@ -10,6 +10,15 @@
 #include <vector>
 #include <atomic>
 #include <stdexcept>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #include "prx/libc/include/Shutdown.hpp"
 
 #include "prx/libc/include/General.hpp"
@@ -52,6 +61,8 @@ extern "C" void LibcRequestShutdown_nid_postfix() {
 }
 
 extern "C" void LibcRequestExit_nid_postfix(int code) {
+    std::fprintf(stderr, "[libc] LibcRequestExit(%d) called from %p\n", code, __builtin_return_address(0));
+    std::fflush(stderr);
     if (exitRequested.exchange(true)) return;
     LibcRequestShutdown_nid_postfix();
     std::thread([code] { LibcExit_nid_no_patch(code); }).detach();
@@ -101,31 +112,36 @@ extern "C" void LibcRunShutdown_nid_postfix() {
 extern "C" {
 
 [[noreturn]] void APS5_VABI _Exit_nid_postfix(int code) {
-    static const bool trace = std::getenv("APS5_TRACE_EXIT") != nullptr;
-    if (trace) {
-        std::fprintf(stderr, "[libc] _Exit(%d) called from %p\n", code, __builtin_return_address(0));
-        std::fflush(stderr);
-    }
+    std::fprintf(stderr, "[libc] _Exit(%d) called from %p\n", code, __builtin_return_address(0));
+    std::fflush(stderr);
     std::_Exit(code);
 }
 
 [[noreturn]] void LibcExit_nid_no_patch(int code) {
+    std::fprintf(stderr, "[libc] LibcExit(%d) called from %p\n", code, __builtin_return_address(0));
+    std::fflush(stderr);
     exitRequested.store(true);
     if (exitStarted.exchange(true)) LibcAwaitExit_nid_postfix();
     LibcRunShutdown_nid_postfix();
-    std::exit(code);
+    std::fprintf(stderr, "[libc] LibcRunShutdown finished, exiting with code %d\n", code);
+    std::fflush(stderr);
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code));
+    std::_Exit(code);
+#else
+    std::_Exit(code);
+#endif
 }
 
 void APS5_VABI exit_nid_postfix(int code) {
-    static const bool trace = std::getenv("APS5_TRACE_EXIT") != nullptr;
-    if (trace) {
-        std::fprintf(stderr, "[libc] exit(%d) called from %p\n", code, __builtin_return_address(0));
-        std::fflush(stderr);
-    }
+    std::fprintf(stderr, "[libc] exit(%d) called from %p\n", code, __builtin_return_address(0));
+    std::fflush(stderr);
     LibcExit_nid_no_patch(code);
 }
 
 [[noreturn]] void APS5_VABI catchReturnFromMain_nid_postfix(int status) {
+    std::fprintf(stderr, "[libc] catchReturnFromMain(%d) called from %p\n", status, __builtin_return_address(0));
+    std::fflush(stderr);
     LibcExit_nid_no_patch(status);
 }
 

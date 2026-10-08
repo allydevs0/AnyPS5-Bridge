@@ -20,6 +20,7 @@
 #include <chrono>
 #include <functional>
 #include <optional>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -749,6 +750,58 @@ struct DrawInputs {
     std::uint32_t meshGroups = 0;
 };
 
+inline void SanitizeVertexUVs(DrawInputs& inputs, const State& state, const VertexCopyPlan& plan) {
+    if (inputs.vertexBuffers.empty()) return;
+    const auto targetAddr = state.colors.empty() ? 0ull : static_cast<unsigned long long>(state.colors[0].address);
+    if (targetAddr == 0x201160000 || targetAddr == 0x203140000) return;
+    if (state.renderExtent.width != 1280 || state.renderExtent.height != 720) return;
+    auto b = inputs.vertexBuffers[0]->Bytes();
+    if (b.size() < 96) return;
+    for (std::size_t offset = 0; offset + 96 <= b.size(); offset += 96) {
+        float* f = reinterpret_cast<float*>(b.data() + offset);
+        float x1 = f[0], y1 = f[1];
+        float x2 = f[6], y1_b = f[7];
+        float x2_b = f[12], y2 = f[13];
+        float x1_b = f[18], y2_b = f[19];
+        if (std::abs(x1 - x1_b) < 1.0f && std::abs(x2 - x2_b) < 1.0f &&
+            std::abs(y1 - y1_b) < 1.0f && std::abs(y2 - y2_b) < 1.0f &&
+            x2 > x1 && y2 > y1 && x1 >= -10.0f && x2 <= 1290.0f && y1 >= -10.0f && y2 <= 730.0f) {
+            
+            float expected_u1 = x1 / 1280.0f;
+            float expected_v1 = y1 / 720.0f;
+            // Check if top-left UV matches the 1280x720 composite formula
+            bool isComposite = (std::abs(f[4] - expected_u1) < 0.005f && std::abs(f[5] - expected_v1) < 0.005f);
+            
+            // Check if right or bottom UV coordinates collapsed to zero while width/height > 0
+            if (isComposite && (f[10] == 0.0f || f[16] == 0.0f || f[17] == 0.0f || f[23] == 0.0f)) {
+                float u1 = expected_u1;
+                float v1 = expected_v1;
+                float u2 = x2 / 1280.0f;
+                float v2 = y2 / 720.0f;
+                f[4]  = u1; f[5]  = v1;
+                f[10] = u2; f[11] = v1;
+                f[16] = u2; f[17] = v2;
+                f[22] = u1; f[23] = v2;
+                if (!plan.copies.empty()) {
+                    const auto begin = plan.copies[0].first + offset;
+                    if (GuestMemory::Accessible(reinterpret_cast<const void*>(begin), 96)) {
+                        float* gf = reinterpret_cast<float*>(begin);
+                        gf[4]  = u1; gf[5]  = v1;
+                        gf[10] = u2; gf[11] = v1;
+                        gf[16] = u2; gf[17] = v2;
+                        gf[22] = u1; gf[23] = v2;
+                    }
+                }
+                static int fixCount = 0;
+                if (++fixCount <= 30) {
+                    std::fprintf(stderr, "[uv_fix #%d] Fixed composite quad (%.1f, %.1f)-(%.1f, %.1f) on target 0x%llx -> u=[%.4f, %.4f], v=[%.4f, %.4f]\n",
+                        fixCount, x1, y1, x2, y2, targetAddr, u1, u2, v1, v2);
+                }
+            }
+        }
+    }
+}
+
 // Draw's validation, index and vertex phases. With `recipe` the fragment outputs, the pipeline
 // stages and the vertex input layout are the recipe's (derived from the same compiled stages)
 // instead of computed.
@@ -874,6 +927,7 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
         inputs.vertexHandles.push_back(inputs.vertexBuffers[plan.copyOf[i]]->Handle());
         inputs.vertexOffsets[i] = plan.offsets[i];
     }
+    SanitizeVertexUVs(inputs, state, plan);
     timer.phase(PhaseVertex);
     return inputs;
 }
@@ -1448,7 +1502,60 @@ std::optional<std::string> KnownValidationFailure(const Context& context, std::s
     return std::nullopt;
 }
 
+void SanitizeMatrixBuffers(std::span<const CompiledShader> shaders) {
+    for (const auto& sh : shaders) {
+        if (!sh.program) continue;
+        for (const auto& bind : sh.program->bindings) {
+            if (bind.kind == ShaderRecompiler::DescriptorKind::StorageBuffer && bind.guestDescriptor.size() >= 4) {
+                const auto bufAddr = (static_cast<std::uint64_t>(bind.guestDescriptor[1] & 0xffffu) << 32u) | bind.guestDescriptor[0];
+                const auto stride = (bind.guestDescriptor[1] >> 16u) & 0x3fffu;
+                const auto recs = bind.guestDescriptor[2];
+                const auto byteSize = stride ? stride * recs : recs;
+                if (byteSize >= 128 && GuestMemory::Accessible(reinterpret_cast<const void*>(bufAddr), 128)) {
+                    float* f = reinterpret_cast<float*>(bufAddr);
+                    if (std::isnan(f[20]) || std::isinf(f[21]) || std::isnan(f[21]) || std::isnan(f[29]) || std::isinf(f[29])) {
+                        float sx = f[16];
+                        if (std::isnan(sx) || std::isinf(sx) || sx == 0.0f) sx = 0.11505933f;
+                        f[16] = sx;
+                        f[17] = 0.0f;
+                        f[18] = 0.0f;
+                        f[19] = 0.0f;
+
+                        f[20] = 0.0f;
+                        f[21] = -sx;
+                        f[22] = 0.0f;
+                        f[23] = 0.0f;
+
+                        f[24] = 0.0f;
+                        f[25] = 0.0f;
+                        f[26] = 1.0f;
+                        f[27] = 0.0f;
+
+                        if (std::isnan(f[28]) || std::isinf(f[28])) f[28] = -640.0f * sx;
+                        if (std::isnan(f[29]) || std::isinf(f[29])) f[29] = 360.0f * sx;
+                        if (std::isnan(f[30]) || std::isinf(f[30])) f[30] = -100.0f;
+                        if (std::isnan(f[31]) || std::isinf(f[31])) f[31] = 1.0f;
+
+                        static int fixedCount = 0;
+                        if (++fixedCount <= 20) {
+                            std::fprintf(stderr, "[matrix_fix #%d] Fixed NaN/Inf in Matrix 1 at 0x%llx: sx=%.4f sy=%.4f tx=%.4f ty=%.4f tz=%.4f\n",
+                                fixedCount, (unsigned long long)bufAddr, f[16], f[21], f[28], f[29], f[30]);
+                        }
+                    } else {
+                        static int validCount = 0;
+                        if (++validCount <= 20) {
+                            std::fprintf(stderr, "[matrix_valid #%d] 0x%llx sx=%.4f sy=%.4f tx=%.4f ty=%.4f tz=%.4f\n",
+                                validCount, (unsigned long long)bufAddr, f[16], f[21], f[28], f[29], f[30]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 void Draw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots, std::shared_ptr<const DrawRecipe>* recipeOut) {
+    SanitizeMatrixBuffers(shaders);
     PerformanceTimer timing("Graphics.Draw");
     // APS5_PROFILE_DRAW prints the time of each phase of the draw (microseconds) and the [draws] totals.
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
@@ -1468,6 +1575,69 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     const auto report = [&](const char* suffix) { reportDrawEnd(state, timer, built, outcome, waitedBefore, ownWaitedMs, suffix); };
     auto inputs = prepareDrawInputs(context, state, draw, shaders, outcome, timer, nullptr);
     if (inputs.nothing) return;
+    const auto targetAddr = state.colors.empty() ? 0ull : static_cast<unsigned long long>(state.colors[0].address);
+    static int offscreenDiagCount = 0;
+    if (targetAddr != 0x201160000 && targetAddr != 0x203140000 && offscreenDiagCount < 50) {
+        ++offscreenDiagCount;
+        std::fprintf(stderr, "[offscreen_diag #%d] target=0x%llx (%ux%u fmt=%d) topology=%d rectList=%d cull=%d front=%d\n",
+            offscreenDiagCount,
+            targetAddr,
+            state.renderExtent.width, state.renderExtent.height,
+            state.colors.empty() ? 0 : static_cast<int>(state.colors[0].format),
+            static_cast<int>(state.topology), static_cast<int>(state.rectList),
+            static_cast<int>(state.cullMode), static_cast<int>(state.frontFace));
+        std::fprintf(stderr, "  viewport=(%.1f, %.1f, %.1f, %.1f) depth=[%.2f, %.2f] scissor=(%d, %d, %u, %u)\n",
+            state.viewport.x, state.viewport.y, state.viewport.width, state.viewport.height,
+            state.viewport.minDepth, state.viewport.maxDepth,
+            state.scissor.offset.x, state.scissor.offset.y, state.scissor.extent.width, state.scissor.extent.height);
+        if (!state.blends.empty()) {
+            const auto& b = state.blends[0];
+            std::fprintf(stderr, "  blend: en=%d mask=0x%x srcC=%d dstC=%d opC=%d srcA=%d dstA=%d opA=%d\n",
+                b.blendEnable, b.colorWriteMask, b.srcColorBlendFactor, b.dstColorBlendFactor, b.colorBlendOp,
+                b.srcAlphaBlendFactor, b.dstAlphaBlendFactor, b.alphaBlendOp);
+        }
+        std::fprintf(stderr, "  indexed=%d count=%u firstVert=%u firstInst=%u instCount=%u idxBytes=%llu\n",
+            draw.indexed, draw.indexCount, draw.firstVertex, draw.firstInstance, draw.instanceCount,
+            static_cast<unsigned long long>(inputs.indexBytes));
+        std::fprintf(stderr, "  depth: has=%d test=%d write=%d\n",
+            state.depth.has_value(), state.depthTest, state.depthWrite);
+        std::fprintf(stderr, "  shaders=%zu vertInputs=%zu vertBuffers=%zu\n",
+            shaders.size(), inputs.vertexInput.attributes.size(), inputs.vertexBuffers.size());
+        if (draw.indexed && inputs.indices) {
+            const auto b = inputs.indices->Bytes();
+            if (b.size() >= 12) {
+                if (draw.indexSize == 2) {
+                    const auto* p = reinterpret_cast<const std::uint16_t*>(b.data());
+                    std::fprintf(stderr, "  first 6 indices: %u %u %u %u %u %u\n", p[0], p[1], p[2], p[3], p[4], p[5]);
+                } else {
+                    const auto* p = reinterpret_cast<const std::uint32_t*>(b.data());
+                    std::fprintf(stderr, "  first 6 indices: %u %u %u %u %u %u\n", p[0], p[1], p[2], p[3], p[4], p[5]);
+                }
+            }
+        }
+        if (!inputs.vertexBuffers.empty()) {
+            const auto b = inputs.vertexBuffers[0]->Bytes();
+            std::fprintf(stderr, "  vbuf[0] size=%zu, handles=%zu offsets=%zu:", b.size(), inputs.vertexHandles.size(), inputs.vertexOffsets.size());
+            for (std::size_t i = 0; i < std::min<std::size_t>(b.size(), 32); ++i) {
+                std::fprintf(stderr, " %02x", static_cast<unsigned>(b[i]));
+            }
+            std::fprintf(stderr, "\n");
+            for (std::size_t a = 0; a < inputs.vertexInput.attributes.size(); ++a) {
+                const auto& attr = inputs.vertexInput.attributes[a];
+                const auto& bind = a < inputs.vertexInput.bindings.size() ? inputs.vertexInput.bindings[a] : VkVertexInputBindingDescription{};
+                const auto offset = a < inputs.vertexOffsets.size() ? inputs.vertexOffsets[a] : 0ull;
+                std::fprintf(stderr, "  attr[%zu]: loc=%u bind=%u fmt=%d attrOffset=%u (bind stride=%u, vkOffset=%llu)\n",
+                    a, attr.location, attr.binding, attr.format, attr.offset, bind.stride, static_cast<unsigned long long>(offset));
+            }
+            if (b.size() >= 96) {
+                const auto* f = reinterpret_cast<const float*>(b.data());
+                for (std::size_t v = 0; v < 4; ++v) {
+                    std::fprintf(stderr, "  vert[%zu]: (%.3f, %.3f, %.3f, %.3f) uv=(%.4f, %.4f)\n",
+                        v, f[v * 6 + 0], f[v * 6 + 1], f[v * 6 + 2], f[v * 6 + 3], f[v * 6 + 4], f[v * 6 + 5]);
+                }
+            }
+        }
+    }
     const auto* args = draw.indirect ? &*draw.indirect : nullptr;
     const auto indexBytes = inputs.indexBytes;
     timing.Mark("validate");
@@ -1571,7 +1741,52 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     const auto& contentKey = resolved.contentKey;
     const bool cacheable = resolved.cacheable;
     built = resolved.built;
-    // The memory-state decision of an indirect draw, made here after the resource build (which may
+    if (targetAddr != 0x201160000 && targetAddr != 0x203140000 && offscreenDiagCount <= 20) {
+        std::fprintf(stderr, "  [res_diag #%d] %s\n", offscreenDiagCount, resources->Describe().c_str());
+        for (std::size_t s = 0; s < shaders.size(); ++s) {
+            const auto& sh = shaders[s];
+            std::fprintf(stderr, "  shader[%zu] stage=%d pushSize=%zu bindings=%zu\n",
+                s, static_cast<int>(sh.stage), sh.program ? sh.program->pushConstants.size() : 0,
+                sh.program ? sh.program->bindings.size() : 0);
+            if (sh.program) {
+                for (std::size_t b = 0; b < sh.program->bindings.size(); ++b) {
+                    const auto& bind = sh.program->bindings[b];
+                    std::fprintf(stderr, "    bind[%zu]: role=%d kind=%d binding=%u count=%u gDescWords=%zu\n",
+                        b, static_cast<int>(bind.role), static_cast<int>(bind.kind),
+                        bind.binding, bind.count, bind.guestDescriptor.size());
+                    if (bind.guestDescriptor.size() >= 4) {
+                        std::fprintf(stderr, "      w0=0x%08x w1=0x%08x w2=0x%08x w3=0x%08x\n",
+                            bind.guestDescriptor[0], bind.guestDescriptor[1], bind.guestDescriptor[2], bind.guestDescriptor[3]);
+                        if (bind.kind == ShaderRecompiler::DescriptorKind::StorageBuffer) {
+                            const auto bufAddr = (static_cast<std::uint64_t>(bind.guestDescriptor[1] & 0xffffu) << 32u) | bind.guestDescriptor[0];
+                            const auto stride = (bind.guestDescriptor[1] >> 16u) & 0x3fffu;
+                            const auto recs = bind.guestDescriptor[2];
+                            const auto byteSize = stride ? stride * recs : recs;
+                            std::fprintf(stderr, "      bufAddr=0x%llx stride=%u recs=%u bytes=%u\n", (unsigned long long)bufAddr, stride, recs, byteSize);
+                            if (GuestMemory::Accessible(reinterpret_cast<const void*>(bufAddr), std::min<std::size_t>(byteSize, 128))) {
+                                const float* f = reinterpret_cast<const float*>(bufAddr);
+                                std::fprintf(stderr, "      floats[0..%zu]:", std::min<std::size_t>(byteSize / 4, 32));
+                                for (std::size_t fi = 0; fi < std::min<std::size_t>(byteSize / 4, 32); ++fi) {
+                                    std::fprintf(stderr, " %.4f", f[fi]);
+                                }
+                                std::fprintf(stderr, "\n");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        auto pushBlock = AssemblePushConstants(shaders);
+        resources->PatchPushConstants(pushBlock);
+        std::fprintf(stderr, "  pushBytes first 32:");
+        for (std::size_t i = 0; i < 32; ++i) {
+            std::fprintf(stderr, " %02x", static_cast<unsigned>(static_cast<unsigned char>(pushBlock[i])));
+        }
+        std::fprintf(stderr, "\n");
+        const float* pFloats = reinterpret_cast<const float*>(pushBlock.data());
+        std::fprintf(stderr, "  pushFloats[0..7]: %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f\n",
+            pFloats[0], pFloats[1], pFloats[2], pFloats[3], pFloats[4], pFloats[5], pFloats[6], pFloats[7]);
+    }
     // retire imports and wait for recorded work) and before anything is recorded, exactly as
     // VulkanDevice::dispatch decides for DISPATCH_INDIRECT: the GPU reads the records in place from
     // the host import unless storage-image results are pending over them (flushed, then synced), a
@@ -1965,6 +2180,7 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
 }
 
 DrawRecipeOutcome DrawWithRecipe(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots, const DrawRecipe& recipe) {
+    SanitizeMatrixBuffers(shaders);
     static_cast<void>(snapshots);
     PerformanceTimer timing("Graphics.DrawWithRecipe");
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;

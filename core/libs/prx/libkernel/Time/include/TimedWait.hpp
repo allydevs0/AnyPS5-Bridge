@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <mutex>
 
+#include <memory>
+
 namespace TimedWait {
 
 bool Coarse();
@@ -41,7 +43,7 @@ struct Waiter;
 
 class Condition {
 public:
-    Condition() = default;
+    Condition();
     ~Condition() = default;
     Condition(const Condition&) = delete;
     Condition& operator=(const Condition&) = delete;
@@ -59,8 +61,10 @@ public:
             lock.lock();
             return;
         }
-#endif
+        if (coarse) coarse->wait(lock);
+#else
         coarse.wait(lock);
+#endif
     }
 
     template <class TLock>
@@ -73,8 +77,11 @@ public:
             lock.lock();
             return signaled;
         }
-#endif
+        if (coarse) return coarse->wait_for(lock, std::chrono::microseconds(RemainingMicros(deadlineNanos))) == std::cv_status::no_timeout;
+        return true;
+#else
         return coarse.wait_for(lock, std::chrono::microseconds(RemainingMicros(deadlineNanos))) == std::cv_status::no_timeout;
+#endif
     }
 
     template <class TLock, class TPredicate>
@@ -100,8 +107,10 @@ private:
     std::mutex queueLock;
     Waiter* head = nullptr;
     Waiter* tail = nullptr;
-#endif
+    std::unique_ptr<std::condition_variable_any> coarse;
+#else
     std::condition_variable_any coarse;
+#endif
 };
 
 }  // namespace TimedWait

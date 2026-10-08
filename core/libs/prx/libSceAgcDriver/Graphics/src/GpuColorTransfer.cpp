@@ -95,8 +95,7 @@ void GpuColorTransfer::prepare(std::uint32_t newWidth, std::uint32_t newHeight, 
 
 void GpuColorTransfer::Upload(std::uint64_t address, std::uint32_t newWidth, std::uint32_t newHeight, ColorTileMode newMode) {
     prepare(newWidth, newHeight, newMode);
-    const ColorTargetLayout layout(width, height, mode);
-    GuestMemory::Read(address, tiled->Bytes(), layout.Alignment());
+    GuestMemory::ReadCommitted(address, tiled->Bytes());
 }
 
 void GpuColorTransfer::convert(VkCommandBuffer commands, bool toTiled, bool swapRedBlue, bool tenBit) {

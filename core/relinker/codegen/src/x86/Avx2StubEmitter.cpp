@@ -379,7 +379,7 @@ void emitBlenddHalf(std::vector<std::uint8_t>& out, const std::uint8_t dst,
 // where that field landed so the patcher can rebase it.
 void emitOrigMem(std::vector<std::uint8_t>& out, const std::uint8_t map, const std::uint8_t pp, const bool w, const bool l,
                  const std::uint8_t opcode, const std::uint8_t vvvv, const std::uint8_t reg, const BmiMemOperand& mem,
-                 std::size_t* ripDisp32Offset = nullptr) {
+                 std::size_t* ripDisp32Offset = nullptr, int rspAdjust = 0) {
     const unsigned x = (mem.Index != -1 && mem.Index >= 8) ? 1 : 0;
     const unsigned b = (mem.Base != -1 && mem.Base >= 8) ? 1 : 0;
     out.push_back(0xC4);
@@ -397,7 +397,18 @@ void emitOrigMem(std::vector<std::uint8_t>& out, const std::uint8_t map, const s
     }
 
     std::uint8_t mod = mem.Mod;
-    if (mod == 1 && !(-128 <= mem.Disp && mem.Disp <= 127)) {
+    std::int64_t disp = mem.Disp;
+    // Only rsp-relative addresses move when the stub pushes (pushfq, base,
+    // scratch area). Base is the decoded register 0..15, so Base == 4 is rsp
+    // exactly; BaseCode == 4 also matches r12 (REX.B + 100b), whose value the
+    // pushes do not change -- adjusting it corrupts the load address.
+    if (rspAdjust != 0 && mem.Base == 4) {
+        disp += rspAdjust;
+        if (mod == 0) {
+            mod = (-128 <= disp && disp <= 127) ? 1 : 2;
+        }
+    }
+    if (mod == 1 && !(-128 <= disp && disp <= 127)) {
         mod = 2;
     }
 
@@ -416,9 +427,9 @@ void emitOrigMem(std::vector<std::uint8_t>& out, const std::uint8_t map, const s
     }
 
     if (mod == 1) {
-        out.push_back(static_cast<std::uint8_t>(mem.Disp & 0xFF));
+        out.push_back(static_cast<std::uint8_t>(disp & 0xFF));
     } else if (mod == 2 || (mod == 0 && mem.BaseCode == -1)) {
-        appendU32(out, static_cast<std::uint32_t>(mem.Disp));
+        appendU32(out, static_cast<std::uint32_t>(disp));
     }
 }
 
@@ -429,9 +440,20 @@ void emitOrigMem(std::vector<std::uint8_t>& out, const std::uint8_t map, const s
 // Emits the ModRM/SIB/displacement tail shared by every [mem] operand form, for
 // an instruction whose destination is ModRM.reg.
 void emitMemModRm(std::vector<std::uint8_t>& out, const BmiMemOperand& mem, const std::uint8_t dest,
-                  std::size_t* ripDisp32Offset) {
+                  std::size_t* ripDisp32Offset, int rspAdjust = 0) {
     std::uint8_t mod = mem.Mod;
-    if (mod == 1 && !(-128 <= mem.Disp && mem.Disp <= 127)) {
+    std::int64_t disp = mem.Disp;
+    // Only rsp-relative addresses move when the stub pushes (pushfq, base,
+    // scratch area). Base is the decoded register 0..15, so Base == 4 is rsp
+    // exactly; BaseCode == 4 also matches r12 (REX.B + 100b), whose value the
+    // pushes do not change -- adjusting it corrupts the load address.
+    if (rspAdjust != 0 && mem.Base == 4) {
+        disp += rspAdjust;
+        if (mod == 0) {
+            mod = (-128 <= disp && disp <= 127) ? 1 : 2;
+        }
+    }
+    if (mod == 1 && !(-128 <= disp && disp <= 127)) {
         mod = 2;
     }
     if (mod == 0 && mem.BaseCode == -1 && !mem.Rip) {
@@ -444,7 +466,7 @@ void emitMemModRm(std::vector<std::uint8_t>& out, const BmiMemOperand& mem, cons
         if (ripDisp32Offset != nullptr) {
             *ripDisp32Offset = out.size();
         }
-        appendU32(out, static_cast<std::uint32_t>(mem.Disp));
+        appendU32(out, static_cast<std::uint32_t>(disp));
         return;
     }
     if (mem.HasSib) {
@@ -461,22 +483,22 @@ void emitMemModRm(std::vector<std::uint8_t>& out, const BmiMemOperand& mem, cons
                                                 (static_cast<std::uint8_t>(mem.BaseCode) & 7)));
     }
     if (mod == 1) {
-        out.push_back(static_cast<std::uint8_t>(mem.Disp & 0xFF));
+        out.push_back(static_cast<std::uint8_t>(disp & 0xFF));
     } else if (mod == 2) {
-        appendU32(out, static_cast<std::uint32_t>(mem.Disp));
+        appendU32(out, static_cast<std::uint32_t>(disp));
     }
 }
 
 // LEA dest, [mem] -- REX.W 8D /r. Used to turn an arbitrary memory operand into a
 // register so a form that needs its destination in ModRM.rm can be encoded at all.
 void emitLeaMem(std::vector<std::uint8_t>& out, const std::uint8_t dest, const BmiMemOperand& mem,
-                std::size_t* ripDisp32Offset = nullptr) {
+                std::size_t* ripDisp32Offset = nullptr, int rspAdjust = 0) {
     const unsigned x = (mem.Index != -1 && mem.Index >= 8) ? 1 : 0;
     const unsigned b = (mem.Base != -1 && mem.Base >= 8) ? 1 : 0;
     const unsigned r = dest >> 3;
     out.push_back(static_cast<std::uint8_t>(0x48 | (r << 2) | (x << 1) | b));   // REX.W
     out.push_back(0x8D);
-    emitMemModRm(out, mem, dest, ripDisp32Offset);
+    emitMemModRm(out, mem, dest, ripDisp32Offset, rspAdjust);
 }
 
 // MOVZX reg, [reg] -- the destination is ModRM.rm, so this can only read through
@@ -484,21 +506,20 @@ void emitLeaMem(std::vector<std::uint8_t>& out, const std::uint8_t dest, const B
 // in 0F B6/0F B7 the ModRM.reg field selects the source width and is *not* the
 // destination register.
 void emitMovzxRegInd(std::vector<std::uint8_t>& out, const std::uint8_t reg, const bool wide16) {
-    const unsigned r = reg >> 3;
-    out.push_back(static_cast<std::uint8_t>(0x48 | (r << 2)));   // REX.W
-    if (wide16) {
-        out.push_back(0x66);
+    const unsigned r = (reg >> 3) & 1;
+    if (r) {
+        out.push_back(0x45); // REX.R (0x04) | REX.B (0x01)
     }
     out.push_back(0x0F);
     out.push_back(wide16 ? 0xB7 : 0xB6);
-    const std::uint8_t srcSel = wide16 ? 1 : 0;
+    const std::uint8_t dest = reg & 7;
     const std::uint8_t rm = reg & 7;
     if (rm == 4) {
-        // rm=100 with mod=00 means SIB, not [rsp]: r12 needs the SIB byte too.
-        out.push_back(static_cast<std::uint8_t>((srcSel << 3) | 4));
-        out.push_back(0x24);                                    // scale=1, no index, base=rsp
+        // rm=100 with mod=00 means SIB (e.g. rsp, r12)
+        out.push_back(static_cast<std::uint8_t>((dest << 3) | 4));
+        out.push_back(0x24); // scale=1, no index, base=rsp/r12
     } else {
-        out.push_back(static_cast<std::uint8_t>((srcSel << 3) | rm));
+        out.push_back(static_cast<std::uint8_t>((dest << 3) | rm));
     }
 }
 
@@ -510,8 +531,8 @@ void emitMovzxRegInd(std::vector<std::uint8_t>& out, const std::uint8_t reg, con
 // standard idiom for that, needs one scratch register, and reads exactly the
 // element's bytes without over-reading the dword around it.
 void emitMovzxMem(std::vector<std::uint8_t>& out, const std::uint8_t reg, const BmiMemOperand& mem, const bool wide16,
-                  std::size_t* ripDisp32Offset = nullptr) {
-    emitLeaMem(out, reg, mem, ripDisp32Offset);
+                  std::size_t* ripDisp32Offset = nullptr, int rspAdjust = 0) {
+    emitLeaMem(out, reg, mem, ripDisp32Offset, rspAdjust);
     emitMovzxRegInd(out, reg, wide16);
 }
 
@@ -593,6 +614,7 @@ void Avx2StubEmitter::emitBinary(std::vector<std::uint8_t>& out, const Avx2Match
     const std::vector<int> t = pickVector(match, 2);
     const bool ymm = match.UseYmm;
 
+    out.push_back(0x9C); // pushfq
     appendPush(out, base);
     emitSetFrameBase(out, base);
     // Preserve the scratch registers before touching them: they come from the free
@@ -617,7 +639,8 @@ void Avx2StubEmitter::emitBinary(std::vector<std::uint8_t>& out, const Avx2Match
         // register over the guest's memory and leave slot(32) untouched, so the
         // halves below would operate on whatever was already in the frame.
         emitOrigMem(out, 1, kFramePp, false, ymm, 0x6F, 0x00,
-                    static_cast<std::uint8_t>(t[1]), match.Mem, rip);
+                    static_cast<std::uint8_t>(t[1]), match.Mem, rip,
+                    static_cast<int>(sizeof(std::uint64_t) * 2 + kScratchVec));
         emitStackStore(out, ymm, base, slot(32), static_cast<std::uint8_t>(t[1]));
     } else {
         emitStackStore(out, ymm, base, slot(32), match.Src2);
@@ -700,6 +723,7 @@ void Avx2StubEmitter::emitBinary(std::vector<std::uint8_t>& out, const Avx2Match
     }
     emitAddRsp(out, static_cast<std::uint32_t>(kScratchVec));
     appendPop(out, base);
+    out.push_back(0x9D); // popfq
 }
 
 // dst = SHIFT(src, imm8). The shift group is the NDD shape: VEX.vvvv is the
@@ -712,6 +736,7 @@ void Avx2StubEmitter::emitShift(std::vector<std::uint8_t>& out, const Avx2Match&
     const std::uint8_t dst = match.Src1;
     const bool ymm = match.UseYmm;
 
+    out.push_back(0x9C); // pushfq
     appendPush(out, base);
     emitSetFrameBase(out, base);
     emitStackStore(out, ymm, base, slot(0), match.Src1);
@@ -739,6 +764,7 @@ void Avx2StubEmitter::emitShift(std::vector<std::uint8_t>& out, const Avx2Match&
     // `dst`; pickVector guarantees the two are different registers.
     emitFrameRestore(out, ymm, v, base, slot(64));
     appendPop(out, base);
+    out.push_back(0x9D); // popfq
 }
 
 // dst = BROADCAST(src). The splat is built with SSE2/AVX1 shuffles into one xmm,
@@ -750,6 +776,7 @@ void Avx2StubEmitter::emitBroadcast(std::vector<std::uint8_t>& out, const Avx2Ma
     const std::uint8_t w = static_cast<std::uint8_t>(t[1]);
     const bool ymm = match.UseYmm;
 
+    out.push_back(0x9C); // pushfq
     appendPush(out, base);
     emitSetFrameBase(out, base);
     // Park both scratch registers; the broadcast overwrites v and the restore at
@@ -760,18 +787,18 @@ void Avx2StubEmitter::emitBroadcast(std::vector<std::uint8_t>& out, const Avx2Ma
 
     if (match.IsMemory) {
         if (match.Op == Avx2Op::BroadcastQ) {
-            // vmovq xmm, m64  (pp=3, W=0, opcode 0x7E)
-            emitOrigMem(out, 1, 3, false, false, 0x7E, 0x00, v, match.Mem, rip);
+            // vmovq xmm, m64  (pp=2 (F3), W=0, opcode 0x7E)
+            emitOrigMem(out, 1, 2, false, false, 0x7E, 0x00, v, match.Mem, rip, static_cast<int>(sizeof(std::uint64_t) * 2));
         } else if (match.Op == Avx2Op::BroadcastD) {
             // vmovd xmm, m32  (pp=1, W=0, opcode 0x6E)
-            emitOrigMem(out, 1, 1, false, false, 0x6E, 0x00, v, match.Mem, rip);
+            emitOrigMem(out, 1, 1, false, false, 0x6E, 0x00, v, match.Mem, rip, static_cast<int>(sizeof(std::uint64_t) * 2));
         } else {
             // Byte/word: no single-instruction exact load exists, so the
             // element goes through a pushed GPR. This runs before the frame
             // pointer is pushed, so the two scratches stay independent.
             const int gpr = pickGpr(match, base);
             appendPush(out, gpr);
-            emitMovzxMem(out, static_cast<std::uint8_t>(gpr), match.Mem, match.Op == Avx2Op::BroadcastW, rip);
+            emitMovzxMem(out, static_cast<std::uint8_t>(gpr), match.Mem, match.Op == Avx2Op::BroadcastW, rip, static_cast<int>(sizeof(std::uint64_t) * 3));
             // vmovd xmm, r32 (pp=1, W=0, opcode 0x6E)
             emitNdsReg(out, 1, 1, false, false, 0x6E, 0x00, v, static_cast<std::uint8_t>(gpr));  // vmovd
             appendPop(out, gpr);
@@ -800,32 +827,21 @@ void Avx2StubEmitter::emitBroadcast(std::vector<std::uint8_t>& out, const Avx2Ma
             emitSseReg(out, 0x6C, v, v);  // punpcklqdq
             break;
         case Avx2Op::BroadcastD:
+        case Avx2Op::BroadcastSs:
             emitSseRegImm(out, 0x70, v, v, 0x00);  // pshufd, imm 0
             break;
         case Avx2Op::BroadcastW:
-            emitSseReg(out, 0x6B, v, v);  // punpcklwd
+            emitSseReg(out, 0x61, v, v);  // punpcklwd
             emitSseRegImm(out, 0x70, v, v, 0x00);
             break;
         case Avx2Op::BroadcastB:
             emitSseReg(out, 0x60, v, v);  // punpcklbw
-            emitSseReg(out, 0x6B, v, v);  // punpcklwd
+            emitSseReg(out, 0x61, v, v);  // punpcklwd
             emitSseRegImm(out, 0x70, v, v, 0x00);
             break;
-        case Avx2Op::BroadcastSs:
-            // shufps draws its four result dwords from *both* operands, so it
-            // cannot splat a register that is not also the destination: passing
-            // src2 as the rm operand interleaves the two and leaves the source's
-            // other dwords in the result. Move src2 into v first, then splat v
-            // with itself.
-            emitNdsReg(out, 1, 1, false, false, 0x6F, 0x00, v, match.Src2);  // vmovdqa v, src2
-            emitSseRegImm(out, 0xC6, v, v, 0x00);  // shufps v, v, 0
-            break;
         case Avx2Op::BroadcastSd:
-            // Same problem as the single form, and unpcklpd would not help: it
-            // leaves qword 1 in the upper half. movddup replicates qword 0 across
-            // the whole register.
-            emitNdsReg(out, 1, 1, false, false, 0x6F, 0x00, v, match.Src2);  // vmovdqa v, src2
-            emitSseReg(out, 0x12, v, v);  // movddup
+            // Same 64-bit replication as BroadcastQ
+            emitSseReg(out, 0x6C, v, v);  // punpcklqdq
             break;
         default:
             throw CodegenException("Unhandled AVX2 broadcast opcode");
@@ -846,6 +862,7 @@ void Avx2StubEmitter::emitBroadcast(std::vector<std::uint8_t>& out, const Avx2Ma
                          static_cast<std::int8_t>(reg == v ? slot(64) : slot(96)));
     }
     appendPop(out, base);
+    out.push_back(0x9D); // popfq
 }
 
 std::vector<std::uint8_t> Avx2StubEmitter::EmitDispatch(

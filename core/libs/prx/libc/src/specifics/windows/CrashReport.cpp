@@ -14,6 +14,7 @@
 #include <mutex>
 #include "Sse4aEmulation.hpp"
 #include "Avx2Emulation.hpp"
+#include "MovbeEmulation.hpp"
 
 namespace {
 
@@ -257,6 +258,24 @@ bool HandleAvx2(EXCEPTION_POINTERS* info) {
     return emulated;
 }
 
+bool HandleMovbe(EXCEPTION_POINTERS* info) {
+    const auto* record = info->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION) return false;
+    auto* context = info->ContextRecord;
+    const auto rip = context->Rip;
+    std::uint8_t bytes[16];
+    const std::size_t available = ReadCode(rip, bytes, sizeof(bytes));
+    bool emulated = movbe_emu::Emulate(bytes, available, *context);
+    if (emulated) {
+        static int emuCount = 0;
+        if (++emuCount <= 30 || emuCount % 500 == 0) {
+            std::fprintf(stderr, "[movbe_emu] Emulated MOVBE at rip=0x%llx (count=%d)\n", (unsigned long long)rip, emuCount);
+            std::fflush(stderr);
+        }
+    }
+    return emulated;
+}
+
 LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     static std::atomic<bool> reported{false};
     const auto* fault = info->ExceptionRecord;
@@ -264,7 +283,9 @@ LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     if (HandleWatch(info)) return EXCEPTION_CONTINUE_EXECUTION;
     if (HandleSse4a(info)) return EXCEPTION_CONTINUE_EXECUTION;
     if (HandleAvx2(info)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (HandleMovbe(info)) return EXCEPTION_CONTINUE_EXECUTION;
     const auto* record = info->ExceptionRecord;
+    if (record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION) return EXCEPTION_CONTINUE_SEARCH;
     if (!IsFatal(record->ExceptionCode)) return EXCEPTION_CONTINUE_SEARCH;
     if (reported.exchange(true)) {
         // Another thread is already reporting; let it finish before this fault ends the process.

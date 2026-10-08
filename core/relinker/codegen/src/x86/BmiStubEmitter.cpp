@@ -211,14 +211,14 @@ int pickT1(const BmiMatch& match, const std::vector<int>& more) {
 }
 
 int pickT2(const BmiMatch& match, const int t1) {
+    const std::set<int> set = excluded(match, {t1, match.Dst, match.Third, match.Src});
     for (std::size_t i = 0; i < kPrefCount; ++i) {
         const int reg = kPref[i];
-        if (reg == t1 || reg == kRcx || reg == kRsp || reg == kRbp || reg == match.Dst || reg == match.Third) {
-            continue;
+        if (set.find(reg) == set.end()) {
+            return reg;
         }
-        return reg;
     }
-    throw CodegenException("No free second scratch register for bextr stub");
+    throw CodegenException("No free second scratch register for BMI stub");
 }
 
 void appendMemLoad(std::vector<std::uint8_t>& out, const std::uint8_t dst, const BmiMatch& match) {
@@ -251,21 +251,32 @@ std::vector<std::uint8_t> BmiStubEmitter::EmitTemplate(const BmiMatch& match) co
         if (!isMem && src != dst) {
             t1 = pickT1(match, {src, dst});
         }
+        bool memCollision = isMem && (match.Mem.Base == (int)dst || match.Mem.Index == (int)dst);
+        if (memCollision) {
+            t1 = pickT1(match, {(int)dst});
+        }
         out.push_back(0x9C); // pushfq
         if (isMem) {
-            appendMemLoad(out, dst, match);
-            if (match.Mem.Base == dst || match.Mem.Index == dst) {
-                throw CodegenException("rorx destination collides with memory base/index");
+            if (memCollision) {
+                appendPush(out, static_cast<std::uint8_t>(t1));
+                appendMemLoad(out, static_cast<std::uint8_t>(t1), match);
+            } else {
+                appendMemLoad(out, dst, match);
             }
         } else {
-            if (t1 != -1) {
+            if (t1 != -1 && !memCollision) {
                 appendPush(out, static_cast<std::uint8_t>(t1));
                 appendMovRR(out, static_cast<std::uint8_t>(t1), src, wide);
             }
         }
-        appendRorImm(out, static_cast<std::uint8_t>((!isMem && src != dst) ? t1 : dst), match.Imm8, wide);
-        if (!isMem && src != dst) {
+        if (memCollision) {
+            appendRorImm(out, static_cast<std::uint8_t>(t1), match.Imm8, wide);
             appendMovRR(out, dst, static_cast<std::uint8_t>(t1), wide);
+        } else {
+            appendRorImm(out, static_cast<std::uint8_t>((!isMem && src != dst) ? t1 : dst), match.Imm8, wide);
+            if (!isMem && src != dst) {
+                appendMovRR(out, dst, static_cast<std::uint8_t>(t1), wide);
+            }
         }
         if (t1 != -1) {
             appendPop(out, static_cast<std::uint8_t>(t1));
@@ -277,9 +288,9 @@ std::vector<std::uint8_t> BmiStubEmitter::EmitTemplate(const BmiMatch& match) co
     if (op == BmiOp::Shlx || op == BmiOp::Shrx || op == BmiOp::Sarx) {
         const std::uint8_t grp2 = (op == BmiOp::Shlx) ? 4 : (op == BmiOp::Shrx) ? 5 : 7;
         const int t1 = pickT1(match, {dst, src, ctrl});
-        const bool needRcx = (ctrl != kRcx);
+        const bool saveRcx = (ctrl != kRcx && dst != kRcx);
         out.push_back(0x9C); // pushfq
-        if (needRcx) {
+        if (saveRcx) {
             appendPush(out, kRcx);
         }
         appendPush(out, static_cast<std::uint8_t>(t1));
@@ -288,13 +299,13 @@ std::vector<std::uint8_t> BmiStubEmitter::EmitTemplate(const BmiMatch& match) co
         } else {
             appendMovRR(out, static_cast<std::uint8_t>(t1), src, wide);
         }
-        if (needRcx) {
+        if (ctrl != kRcx) {
             appendMovRR(out, kRcx, ctrl, false);
         }
         appendShiftCl(out, static_cast<std::uint8_t>(t1), grp2, wide);
         appendMovRR(out, dst, static_cast<std::uint8_t>(t1), wide);
         appendPop(out, static_cast<std::uint8_t>(t1));
-        if (needRcx) {
+        if (saveRcx) {
             appendPop(out, kRcx);
         }
         out.push_back(0x9D); // popfq
@@ -319,25 +330,30 @@ std::vector<std::uint8_t> BmiStubEmitter::EmitTemplate(const BmiMatch& match) co
 
     if (op == BmiOp::Bzhi) {
         const int t1 = pickT1(match, {dst, src, ctrl});
-        const bool needRcx = (ctrl != kRcx);
+        const int t2 = pickT2(match, t1);
+        const bool saveRcx = (ctrl != kRcx && dst != kRcx);
+        appendPush(out, static_cast<std::uint8_t>(t2));
         appendPush(out, static_cast<std::uint8_t>(t1));
+        if (saveRcx) {
+            appendPush(out, kRcx);
+        }
         if (isMem) {
             appendMemLoad(out, static_cast<std::uint8_t>(t1), match);
         } else {
             appendMovRR(out, static_cast<std::uint8_t>(t1), src, wide);
         }
-        if (needRcx) {
-            appendPush(out, kRcx);
+        if (ctrl != kRcx) {
             appendMovRR(out, kRcx, ctrl, false);
         }
         appendCmpRImm(out, kRcx, wide ? kSize64 : kSize32, false);
         appendJcc8(out, 3, 0); // jae
         const std::size_t jae1 = out.size() - 1;
 
-        appendMovRmImm(out, dst, -1, wide);
-        appendShiftCl(out, dst, 4, wide);
-        appendNotR(out, dst, wide);
-        appendAndRR(out, dst, static_cast<std::uint8_t>(t1), wide);
+        appendMovRmImm(out, static_cast<std::uint8_t>(t2), -1, wide);
+        appendShiftCl(out, static_cast<std::uint8_t>(t2), 4, wide);
+        appendNotR(out, static_cast<std::uint8_t>(t2), wide);
+        appendAndRR(out, static_cast<std::uint8_t>(t2), static_cast<std::uint8_t>(t1), wide);
+        appendMovRR(out, dst, static_cast<std::uint8_t>(t2), wide);
         appendTestRR(out, dst, wide);
         appendJmp8(out, 0);
         const std::size_t jmpa = out.size() - 1;
@@ -350,19 +366,23 @@ std::vector<std::uint8_t> BmiStubEmitter::EmitTemplate(const BmiMatch& match) co
 
         out[jae1] = static_cast<std::uint8_t>((alla - (jae1 + 1)) & 0xFF);
         out[jmpa] = static_cast<std::uint8_t>((done - (jmpa + 1)) & 0xFF);
-        if (needRcx) {
+        if (saveRcx) {
             appendPop(out, kRcx);
         }
         appendPop(out, static_cast<std::uint8_t>(t1));
+        appendPop(out, static_cast<std::uint8_t>(t2));
         return out;
     }
 
     if (op == BmiOp::Bextr) {
         const int t1 = pickT1(match, {dst, src, ctrl});
         const int t2 = pickT2(match, t1);
+        const bool saveRcx = (dst != kRcx);
         appendPush(out, static_cast<std::uint8_t>(t2));
         appendPush(out, static_cast<std::uint8_t>(t1));
-        appendPush(out, kRcx);
+        if (saveRcx) {
+            appendPush(out, kRcx);
+        }
         if (isMem) {
             appendMemLoad(out, static_cast<std::uint8_t>(t1), match);
         } else {
@@ -387,13 +407,14 @@ std::vector<std::uint8_t> BmiStubEmitter::EmitTemplate(const BmiMatch& match) co
         const std::size_t ja2 = out.size() - 1;
 
         appendMovR8R8(out, kRcx, static_cast<std::uint8_t>(t2));
-        appendMovRmImm(out, dst, 1, wide);
-        appendShiftCl(out, dst, 4, wide);
-        appendRex(out, wide, false, false, dst > 7);
+        appendMovRmImm(out, static_cast<std::uint8_t>(t2), 1, wide);
+        appendShiftCl(out, static_cast<std::uint8_t>(t2), 4, wide);
+        appendRex(out, wide, false, false, t2 > 7);
         out.push_back(0x83);
-        appendModRm(out, 3, 5, dst & 7);
+        appendModRm(out, 3, 5, t2 & 7);
         out.push_back(1);
-        appendAndRR(out, dst, static_cast<std::uint8_t>(t1), wide);
+        appendAndRR(out, static_cast<std::uint8_t>(t1), static_cast<std::uint8_t>(t2), wide);
+        appendMovRR(out, dst, static_cast<std::uint8_t>(t1), wide);
         appendJmp8(out, 0);
         const std::size_t jmpa = out.size() - 1;
 
@@ -412,7 +433,9 @@ std::vector<std::uint8_t> BmiStubEmitter::EmitTemplate(const BmiMatch& match) co
         out[ja2] = static_cast<std::uint8_t>((alla - (ja2 + 1)) & 0xFF);
         out[jmpa] = static_cast<std::uint8_t>((done - (jmpa + 1)) & 0xFF);
         out[jmpb] = static_cast<std::uint8_t>((done - (jmpb + 1)) & 0xFF);
-        appendPop(out, kRcx);
+        if (saveRcx) {
+            appendPop(out, kRcx);
+        }
         appendPop(out, static_cast<std::uint8_t>(t1));
         appendPop(out, static_cast<std::uint8_t>(t2));
         return out;

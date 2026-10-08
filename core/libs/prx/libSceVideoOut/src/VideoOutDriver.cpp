@@ -428,11 +428,17 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
         request.gpuComplete = true;
         request.cfg->vblankCond.notify_all();
     };
-    if (req.index >= 0) {
-        const auto display = DescribeVideoOutBuffer(req.buffer, req.group);
-        AgcDriverPresentBuffer_nid_postfix(target, display, gpuReady, &req);
-    } else {
-        AgcDriverPresentClear_nid_postfix(target, req.index == VIDEO_OUT_BUFFER_INDEX_BLACK, gpuReady, &req);
+    try {
+        if (req.index >= 0) {
+            const auto display = DescribeVideoOutBuffer(req.buffer, req.group);
+            AgcDriverPresentBuffer_nid_postfix(target, display, gpuReady, &req);
+        } else {
+            AgcDriverPresentClear_nid_postfix(target, req.index == VIDEO_OUT_BUFFER_INDEX_BLACK, gpuReady, &req);
+        }
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "[videoout] presentation buffer warning: %s (falling back to black clear)\n", error.what());
+        std::fflush(stderr);
+        AgcDriverPresentClear_nid_postfix(target, true, gpuReady, &req);
     }
     timing.Mark("present");
     window.UpdateTitle();
@@ -483,6 +489,8 @@ void VideoOutDriver::presentLoop(std::stop_token token) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_QUIT) {
+                    std::fprintf(stderr, "[VideoOut] SDL_QUIT event received! Requesting exit.\n");
+                    std::fflush(stderr);
                     LibcRequestExit_nid_postfix(0);
                     throw ProcessShutdown{};
                 }

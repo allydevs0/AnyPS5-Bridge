@@ -87,6 +87,7 @@ Operands decodeOperands(const std::uint8_t* data, const std::size_t pos, const u
     }
 
     out.isMem = true;
+    out.mem.Mod = mod;
     std::size_t p = pos + 1;
     if (rm == 4) {
         const std::uint8_t sib = data[p];

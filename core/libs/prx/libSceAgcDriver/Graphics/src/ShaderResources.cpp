@@ -308,6 +308,19 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
     // memory first.
     auto source = StorageTexture::FindPending(address, guestBytes);
     if (source != nullptr && (depthCompare || !Texture::CanCopyFrom(*source, resource) || MetadataMoved(*source, resource))) source.reset();
+    if (resource.width >= 640 && resource.height >= 360) {
+        auto rawSource = StorageTexture::FindPending(address, guestBytes);
+        bool canCopy = rawSource ? Texture::CanCopyFrom(*rawSource, resource) : false;
+        bool metaMoved = rawSource ? MetadataMoved(*rawSource, resource) : false;
+        std::fprintf(stderr, "[cachedTexture_diag %ux%u] addr=0x%llx bytes=%llu FindPending=%p canCopy=%d metaMoved=%d depthCmp=%d source=%p\n",
+            resource.width, resource.height,
+            static_cast<unsigned long long>(address), static_cast<unsigned long long>(guestBytes),
+            rawSource.get(), canCopy, metaMoved, depthCompare, source.get());
+        if (source == nullptr) {
+            std::fprintf(stderr, "  depthCompare=%d SampledFromStorageEligible=%d\n",
+                depthCompare, SampledFromStorageEligible(context, resource, guestBytes));
+        }
+    }
     std::optional<DccKeys> keys;
     bool clearThroughKeys = false;
     if (source != nullptr && resource.dccAddress != 0 && IsDccClear(source->FilledKeys())) {
@@ -415,6 +428,11 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
     }
     CachedTexture entry{key, address, std::vector<std::byte>(source != nullptr ? 0u : bytes), nullptr, *keys, generation};
     entry.accounted = guestBytes;
+    if (resource.width >= 640 && resource.height >= 360) {
+        std::fprintf(stderr, "[cachedTexture_create %ux%u] addr=0x%llx created as %s (source=%p)\n",
+            resource.width, resource.height, static_cast<unsigned long long>(address),
+            source != nullptr ? "VIEW" : "SNAPSHOT", source.get());
+    }
     if (source != nullptr) {
         entry.source = source;
         entry.sourceVersion = source->Version();

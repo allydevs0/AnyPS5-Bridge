@@ -505,7 +505,12 @@ State DecodeState(const QueueState& queue) {
     for (std::uint32_t slot = 0; slot < 8; ++slot) {
         if (((shaderMask >> (4u * slot)) & 0xfu) != 0) exportSlots.push_back(slot);
     }
-    const auto written = [&](std::uint32_t slot) { return ((targetMask >> (4u * slot)) & 0xfu) != 0; };
+    const auto written = [&](std::uint32_t slot) {
+        if (((targetMask >> (4u * slot)) & 0xfu) == 0) return false;
+        const auto it = cx.find(0x31c + slot * 0xfu);
+        if (it != cx.end() && ((it->second >> 2u) & 0x1fu) == 0) return false;
+        return true;
+    };
     std::uint32_t exportCount = 0;
     for (std::uint32_t index = 0; index < exportSlots.size(); ++index) {
         if (written(exportSlots[index])) exportCount = index + 1;

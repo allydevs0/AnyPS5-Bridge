@@ -154,9 +154,13 @@ bool Condition::waitSignalUntil(Waiter* waiter, std::uint64_t deadlineNanos) {
     return true;
 }
 
+Condition::Condition() {
+    if (Coarse()) coarse = std::make_unique<std::condition_variable_any>();
+}
+
 void Condition::NotifyOne() {
     if (Coarse()) {
-        coarse.notify_one();
+        if (coarse) coarse->notify_one();
         return;
     }
     std::lock_guard lock(queueLock);
@@ -168,7 +172,7 @@ void Condition::NotifyOne() {
 
 void Condition::NotifyAll() {
     if (Coarse()) {
-        coarse.notify_all();
+        if (coarse) coarse->notify_all();
         return;
     }
     std::lock_guard lock(queueLock);
@@ -179,6 +183,8 @@ void Condition::NotifyAll() {
 }
 
 #else
+
+Condition::Condition() = default;
 
 void Condition::NotifyOne() {
     coarse.notify_one();

@@ -161,12 +161,17 @@ static void finishThread(PthreadPrivate* self, void* retval) {
     UnregisterStack(self);
     if (const auto callback = threadDtors.load())
         callback();
+#ifndef _WIN32
     {
         std::unique_lock<std::mutex> lk(self->_join_mtx);
         self->_retval = retval;
         self->_finished.store(true, std::memory_order_release);
     }
     self->_join_cv.notify_all();
+#else
+    self->_retval = retval;
+    self->_finished.store(true, std::memory_order_release);
+#endif
 }
 
 static void RunThread(std::unique_ptr<ThreadArgs> args) {
@@ -227,12 +232,26 @@ static void ApplyJobAffinity(PthreadPrivate& thread, void* handle) {
 
 struct NativeThreadArgs {
     std::unique_ptr<ThreadArgs> guest;
-    std::future<bool> start;
-    std::promise<void> initialized;
+    HANDLE startEvent = nullptr;
+    HANDLE initializedEvent = nullptr;
+    bool start = false;
+    std::exception_ptr initException;
+
+    NativeThreadArgs() {
+        startEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        initializedEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    }
+    ~NativeThreadArgs() {
+        if (startEvent) CloseHandle(startEvent);
+        if (initializedEvent) CloseHandle(initializedEvent);
+    }
 };
 
 static unsigned __stdcall StartNativeThread(void* opaque) {
-    std::unique_ptr<NativeThreadArgs> args(static_cast<NativeThreadArgs*>(opaque));
+    auto nativeHolder = std::unique_ptr<std::shared_ptr<NativeThreadArgs>>(static_cast<std::shared_ptr<NativeThreadArgs>*>(opaque));
+    auto args = std::move(*nativeHolder);
+    nativeHolder.reset();
+
     auto* self = args->guest->self;
     try {
         ULONG_PTR low = 0;
@@ -254,15 +273,16 @@ static unsigned __stdcall StartNativeThread(void* opaque) {
             SetThreadDescription(GetCurrentThread(), description.c_str());
             ApplyJobAffinity(*self, nullptr);
         }
-        args->initialized.set_value();
+        SetEvent(args->initializedEvent);
     } catch (...) {
-        args->initialized.set_exception(std::current_exception());
+        args->initException = std::current_exception();
+        SetEvent(args->initializedEvent);
         return 0;
     }
-    if (!args->start.get())
+    WaitForSingleObject(args->startEvent, INFINITE);
+    if (!args->start)
         return 0;
     auto guest = std::move(args->guest);
-    args.reset();
     RunThread(std::move(guest));
     currentThread = nullptr;
     ReleaseThread(self);
@@ -285,7 +305,6 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
         p->priority.store((*attr)->_schedpriority, std::memory_order_relaxed);
     }
     if (name) p->name = name;
-    std::promise<bool> start;
     auto args = std::make_unique<ThreadArgs>(ThreadArgs{entry, arg, p.get()});
 #ifdef _WIN32
     SYSTEM_INFO system{};
@@ -293,27 +312,31 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
     const std::size_t nativeStack = (p->stackSize + system.dwPageSize - 1) / system.dwPageSize * system.dwPageSize;
     if (p->stackSize < 16384 || nativeStack > std::numeric_limits<unsigned>::max())
         throw std::runtime_error("scePthreadCreate: invalid Windows stack size");
-    auto native = std::make_unique<NativeThreadArgs>(NativeThreadArgs{std::move(args), start.get_future(), {}});
-    auto initialized = native->initialized.get_future();
-    const auto handle = _beginthreadex(nullptr, static_cast<unsigned>(nativeStack), StartNativeThread, native.get(), 0, nullptr);
-    if (handle == 0)
+    auto native = std::make_shared<NativeThreadArgs>();
+    native->guest = std::move(args);
+    auto* nativePtr = new std::shared_ptr<NativeThreadArgs>(native);
+    const auto handle = _beginthreadex(nullptr, static_cast<unsigned>(nativeStack), StartNativeThread, nativePtr, 0, nullptr);
+    if (handle == 0) {
+        delete nativePtr;
         throw std::system_error(errno, std::generic_category(), "Creating guest thread");
+    }
     p->nativeHandle = reinterpret_cast<void*>(handle);
-    native.release();
-    try {
-        initialized.get();
-    } catch (...) {
-        start.set_value(false);
+    WaitForSingleObject(native->initializedEvent, INFINITE);
+    if (native->initException) {
+        native->start = false;
+        SetEvent(native->startEvent);
         WaitForSingleObject(p->nativeHandle, INFINITE);
         CloseHandle(p->nativeHandle);
-        throw;
+        std::rethrow_exception(native->initException);
     }
     auto* published = p.release();
     *thread = published;
-    start.set_value(true);
+    native->start = true;
+    SetEvent(native->startEvent);
     if (detached)
         ReleaseThread(published);
 #else
+    std::promise<bool> start;
     auto* self = p.get();
     p->_thr = std::thread([self, args = std::move(args), ready = start.get_future()]() mutable {
         if (!ready.get()) return;
