@@ -15,6 +15,7 @@
 #include "Sse4aEmulation.hpp"
 #include "Avx2Emulation.hpp"
 #include "MovbeEmulation.hpp"
+#include "BmiEmulation.hpp"
 
 namespace {
 
@@ -276,6 +277,24 @@ bool HandleMovbe(EXCEPTION_POINTERS* info) {
     return emulated;
 }
 
+bool HandleBmi(EXCEPTION_POINTERS* info) {
+    const auto* record = info->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION) return false;
+    auto* context = info->ContextRecord;
+    const auto rip = context->Rip;
+    std::uint8_t bytes[16];
+    const std::size_t available = ReadCode(rip, bytes, sizeof(bytes));
+    const bool emulated = bmi_emu::Emulate(bytes, available, *context);
+    if (emulated) {
+        static int emuCount = 0;
+        if (++emuCount <= 30 || emuCount % 500 == 0) {
+            std::fprintf(stderr, "[bmi_emu] Emulated BMI at rip=0x%llx (count=%d)\n", (unsigned long long)rip, emuCount);
+            std::fflush(stderr);
+        }
+    }
+    return emulated;
+}
+
 LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     static std::atomic<bool> reported{false};
     const auto* fault = info->ExceptionRecord;
@@ -283,9 +302,25 @@ LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     if (HandleWatch(info)) return EXCEPTION_CONTINUE_EXECUTION;
     if (HandleSse4a(info)) return EXCEPTION_CONTINUE_EXECUTION;
     if (HandleAvx2(info)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (HandleBmi(info)) return EXCEPTION_CONTINUE_EXECUTION;
     if (HandleMovbe(info)) return EXCEPTION_CONTINUE_EXECUTION;
     const auto* record = info->ExceptionRecord;
-    if (record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION) return EXCEPTION_CONTINUE_SEARCH;
+    if (record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION) {
+        // No handler recognised the site: name it before letting the process die, otherwise the
+        // only evidence is the exit code.
+        static std::atomic<int> undecoded{0};
+        if (undecoded.fetch_add(1) < 8) {
+            char line[MAX_PATH + 64];
+            DescribeAddress(info->ContextRecord->Rip, line, sizeof(line));
+            std::uint8_t bytes[16];
+            const std::size_t available = ReadCode(info->ContextRecord->Rip, bytes, sizeof(bytes));
+            std::fprintf(stderr, "[illegal] unhandled #UD at %s:", line);
+            for (std::size_t i = 0; i < available; ++i) std::fprintf(stderr, " %02x", bytes[i]);
+            std::fprintf(stderr, "\n");
+            std::fflush(stderr);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (!IsFatal(record->ExceptionCode)) return EXCEPTION_CONTINUE_SEARCH;
     if (reported.exchange(true)) {
         // Another thread is already reporting; let it finish before this fault ends the process.

@@ -208,6 +208,12 @@ inline bool Emulate(const uint8_t* bytes, std::size_t available, CONTEXT& ctx) {
                 loadSize = is256 ? 8 : 4;
             } else if (opcode == 0x20 || opcode == 0x30 || opcode == 0x23 || opcode == 0x33 || opcode == 0x25 || opcode == 0x35) {
                 loadSize = is256 ? 16 : 8;
+            } else if (opcode == 0x58) {
+                loadSize = 4; // VPBROADCASTD reads a single dword
+            } else if (opcode == 0x59) {
+                loadSize = 8; // VPBROADCASTQ reads a single qword
+            } else if (opcode == 0x78) {
+                loadSize = 1; // VPBROADCASTB reads a single byte
             }
         }
         std::memcpy(&v2.b[0], reinterpret_cast<const void*>(memAddr), loadSize);
@@ -390,6 +396,24 @@ inline bool Emulate(const uint8_t* bytes, std::size_t available, CONTEXT& ctx) {
                 res.set_u32(i, v2.u32(idx));
             }
             StoreVec(ctx, ymmHigh, reg, res, true);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x58) { // VPBROADCASTD: a dword fills every element
+            const std::size_t count = is256 ? 8 : 4;
+            for (std::size_t i = 0; i < count; ++i) res.set_u32(i, v2.u32(0));
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x59) { // VPBROADCASTQ: a qword fills every element
+            const std::size_t count = is256 ? 4 : 2;
+            for (std::size_t i = 0; i < count; ++i) res.set_u64(i, v2.u64(0));
+            StoreVec(ctx, ymmHigh, reg, res, is256);
+            ctx.Rip += cursor;
+            return true;
+        } else if (opcode == 0x78) { // VPBROADCASTB: a byte fills every element
+            const std::size_t count = is256 ? 32 : 16;
+            for (std::size_t i = 0; i < count; ++i) res.b[i] = v2.b[0];
+            StoreVec(ctx, ymmHigh, reg, res, is256);
             ctx.Rip += cursor;
             return true;
         }
