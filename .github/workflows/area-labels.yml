@@ -1,8 +1,7 @@
 name: Area labels
 
 on:
-  schedule:
-    - cron: '30 * * * *'
+  pull_request_target:
   workflow_dispatch:
 
 permissions: {}

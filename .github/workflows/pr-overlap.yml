@@ -1,10 +1,7 @@
 name: PR overlap
 
 on:
-  push:
-    branches: [main]
-  schedule:
-    - cron: '15 * * * *'
+  pull_request:
   workflow_dispatch:
 
 permissions: {}
