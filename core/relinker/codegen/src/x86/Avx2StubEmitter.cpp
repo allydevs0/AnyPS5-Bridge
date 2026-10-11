@@ -816,14 +816,16 @@ void Avx2StubEmitter::emitBroadcast(std::vector<std::uint8_t>& out, const Avx2Ma
     // because it carries a VEX prefix -- the target CPU does have AVX.
     switch (match.Op) {
         case Avx2Op::BroadcastQ:
-            // NOTE: MOVDDUP (66 0F 12) would be the textbook splat here -- it puts
-            // qword 0 in all four slots, whereas punpcklqdq only duplicates it into
-            // slots 0 and 1 and leaves qword 1 in slots 2 and 3. MOVDDUP is still
-            // *rejected* by the differential suite: the four vpbroadcastq_ymm_r*
-            // cases pass with punpcklqdq and fail with movddup, which is the
-            // opposite of what the ISA says and means the reference and the stub
-            // disagree about the source operand for this op. That disagreement is
-            // unresolved, so the empirically-passing form stays until it is.
+            // punpcklqdq is the right splat here and is NOT a partial one. It sets
+            // v = {qword0, qword0}, and the stores below write that same 128-bit
+            // value to slot(0) *and* slot(16) before the 256-bit reload, so all
+            // four qword lanes end up holding qword 0. What made an earlier
+            // version of this emit `emitSseReg(out, 0x12, v, v)` was a comment
+            // that called MOVDDUP "66 0F 12". MOVDDUP is F3 0F 12; 66 0F 12 is
+            // MOVLPD, whose *register* form is an AMD-only encoding that Intel
+            // raises #UD on. The 0x66 that emitSseReg hardcodes cannot be dropped
+            // here to reach MOVDDUP -- it changes the instruction. punpcklqdq
+            // (66 0F 6C) is plain SSE2 and correct, so it stays.
             emitSseReg(out, 0x6C, v, v);  // punpcklqdq
             break;
         case Avx2Op::BroadcastD:
